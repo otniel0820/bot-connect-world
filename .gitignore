@@ -1,0 +1,30 @@
+# Environment variables - NUNCA subir al repositorio
+.env
+.env.local
+.env.production
+
+# Dependencies
+node_modules/
+
+# Build
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Coverage
+coverage/
