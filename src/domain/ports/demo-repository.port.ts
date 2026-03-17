@@ -17,4 +17,5 @@ export abstract class DemoRepositoryPort {
   abstract save(data: CreateDemoData): Promise<void>;
   abstract findPendingFollowUps(): Promise<DemoRecord[]>;
   abstract markFollowUpSent(id: string): Promise<void>;
+  abstract findByFacebookUserId(facebookUserId: string): Promise<DemoRecord | null>;
 }

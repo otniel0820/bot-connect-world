@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { MessengerPort } from '../../domain/ports/messenger.port';
 import { HandleIncomingMessageUseCase } from '../use-cases/handle-incoming-message.use-case';
 import { MessagingEvent } from '../../presentation/dtos/webhook-event.dto';
+import { BotControlService } from './bot-control.service';
+import { ConversationStore } from '../stores/conversation.store';
 
 const MEDIA_DEBOUNCE_MS = 5000;
 const MAX_MESSAGE_AGE_MS = 30_000;
@@ -24,11 +26,23 @@ export class MessengerEventProcessorService {
     private readonly handleIncomingMessage: HandleIncomingMessageUseCase,
     private readonly messengerPort: MessengerPort,
     private readonly configService: ConfigService,
+    private readonly botControlService: BotControlService,
+    private readonly conversationStore: ConversationStore,
   ) {}
 
   async process(event: MessagingEvent): Promise<void> {
     const senderId = event.sender?.id;
-    if (!senderId || !event.message || (event.message as any).is_echo) return;
+    if (!senderId || !event.message) return;
+
+    // Echo: el agente (yo) escribió desde la página → activar human takeover para ese cliente
+    if ((event.message as any).is_echo) {
+      const customerId = event.recipient?.id;
+      if (customerId) {
+        this.conversationStore.setHumanTakeover(customerId, true);
+        this.logger.log(`Human takeover activado para ${customerId} — bot en pausa`);
+      }
+      return;
+    }
 
     const messageText = event.message.text?.trim() ?? '';
     const imageUrl = this.extractAttachment(event, 'image');
@@ -53,10 +67,22 @@ export class MessengerEventProcessorService {
       return;
     }
 
+    // Verificar si el bot está activo
+    if (!this.botControlService.getSettings().bot_enabled) {
+      this.logger.debug(`Bot desactivado — ignorando mensaje de ${senderId}`);
+      return;
+    }
+
     // Modo prueba: responder solo al usuario configurado
     const testUserId = this.configService.get<string>('testUserId');
     if (testUserId && senderId !== testUserId) {
       this.logger.debug(`Ignorado en modo prueba (sender: ${senderId})`);
+      return;
+    }
+
+    // Human takeover: el agente está atendiendo este chat manualmente
+    if (this.conversationStore.isHumanTakeover(senderId)) {
+      this.logger.log(`Human takeover activo — bot ignora mensaje de ${senderId}`);
       return;
     }
 

@@ -31,6 +31,12 @@ export default () => ({
     uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/web-app-connect',
   },
 
+  email: {
+    resendApiKey: process.env.RESEND_API_KEY,
+    adminEmail: process.env.ADMIN_EMAIL,
+    fromEmail: process.env.FROM_EMAIL || 'soporte@connect-world.it.com',
+  },
+
   // Si está definido, el bot solo responde a este Facebook User ID (modo prueba)
   testUserId: process.env.TEST_USER_ID || undefined,
 });

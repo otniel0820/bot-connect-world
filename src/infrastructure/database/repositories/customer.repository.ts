@@ -11,27 +11,16 @@ export class CustomerMongoRepository implements CustomerRepositoryPort {
   async findByCustomerId(customerId: string): Promise<CustomerInfo | null> {
     const customer = await this.customerModel.findById(customerId).exec();
     if (!customer) return null;
-    return {
-      id: customer.id,
-      name: customer.name,
-      panelUsername: customer.username || undefined,
-    };
+    return { id: customer.id, name: customer.name };
   }
 
   async findByFacebookId(facebookId: string): Promise<CustomerInfo | null> {
     const customer = await this.customerModel.findOne({ facebook_id: facebookId }).exec();
     if (!customer) return null;
-    return {
-      id: customer.id,
-      name: customer.name,
-      panelUsername: customer.username || undefined,
-    };
+    return { id: customer.id, name: customer.name };
   }
 
-  async updatePanelCredentials(customerId: string, panelUsername: string, facebookId: string): Promise<void> {
-    await this.customerModel.findByIdAndUpdate(customerId, {
-      username: panelUsername,
-      facebook_id: facebookId,
-    }).exec();
+  async updateFacebookId(customerId: string, facebookId: string): Promise<void> {
+    await this.customerModel.findByIdAndUpdate(customerId, { facebook_id: facebookId }).exec();
   }
 }

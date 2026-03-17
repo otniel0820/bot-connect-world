@@ -4,9 +4,11 @@ import configuration from './config/configuration';
 import { MessengerPort } from '../domain/ports/messenger.port';
 import { AiProviderPort } from '../domain/ports/ai-provider.port';
 import { PanelPort } from '../domain/ports/panel.port';
+import { EmailPort } from '../domain/ports/email.port';
 import { FacebookMessengerAdapter } from './adapters/facebook/facebook-messenger.adapter';
 import { OpenAiAdapter } from './adapters/ai/openai.adapter';
 import { IptvPanelAdapter } from './adapters/panel/iptv-panel.adapter';
+import { ResendEmailAdapter } from './adapters/email/resend-email.adapter';
 import { DatabaseModule } from './database/database.module';
 
 @Global()
@@ -32,7 +34,11 @@ import { DatabaseModule } from './database/database.module';
       provide: PanelPort,
       useClass: IptvPanelAdapter,
     },
+    {
+      provide: EmailPort,
+      useClass: ResendEmailAdapter,
+    },
   ],
-  exports: [MessengerPort, AiProviderPort, PanelPort, DatabaseModule],
+  exports: [MessengerPort, AiProviderPort, PanelPort, EmailPort, DatabaseModule],
 })
 export class InfrastructureModule {}

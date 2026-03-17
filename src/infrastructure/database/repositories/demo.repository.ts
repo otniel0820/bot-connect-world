@@ -38,4 +38,20 @@ export class DemoMongoRepository implements DemoRepositoryPort {
       followUpSentAt: new Date(),
     }).exec();
   }
+
+  async findByFacebookUserId(facebookUserId: string): Promise<DemoRecord | null> {
+    const doc = await this.demoModel.findOne({ facebookUserId }).sort({ activatedAt: -1 }).exec();
+    if (!doc) return null;
+    return {
+      id: (doc._id as any).toString(),
+      facebookUserId: doc.facebookUserId,
+      fullname: doc.fullname,
+      panelUsername: doc.panelUsername,
+      panelPassword: doc.panelPassword,
+      packageName: doc.packageName,
+      activatedAt: doc.activatedAt,
+      expiresAt: doc.expiresAt,
+      followUpSent: doc.followUpSent,
+    };
+  }
 }

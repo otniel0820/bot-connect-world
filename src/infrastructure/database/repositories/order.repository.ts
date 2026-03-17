@@ -27,7 +27,7 @@ export class OrderMongoRepository implements OrderRepositoryPort {
     }).sort({ created_at: -1 }).exec();
     if (!order) return null;
     return {
-      customerId: order.customer_id,
+      customerId: order.customer_id.toString(),
       planId: order.plan_id,
       devices: order.devices,
       months: order.months,
@@ -40,11 +40,18 @@ export class OrderMongoRepository implements OrderRepositoryPort {
     const order = await this.orderModel.findOne({ payment_receipt_id: paymentReceiptId }).exec();
     if (!order) return null;
     return {
-      customerId: order.customer_id,
-      planId: order.plan_id,
-      devices: order.devices,
-      months: order.months,
-      amount: order.amount,
+      id:               order.id,
+      customerId:       order.customer_id.toString(),
+      planId:           order.plan_id,
+      devices:          order.devices,
+      months:           order.months,
+      amount:           order.amount,
+      isRenewal:        order.is_renewal ?? false,
+      panelUsernameId:  order.panel_username_id?.toString() ?? null,
     };
+  }
+
+  async setPanelUsernameId(orderId: string, panelUsernameId: string): Promise<void> {
+    await this.orderModel.findByIdAndUpdate(orderId, { panel_username_id: panelUsernameId }).exec();
   }
 }

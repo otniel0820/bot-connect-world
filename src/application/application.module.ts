@@ -8,9 +8,11 @@ import { DemoFollowUpService } from './services/demo-followup.service';
 import { PaymentLookupService } from './services/payment-lookup.service';
 import { DemoFlowService } from './services/demo-flow.service';
 import { MessengerEventProcessorService } from './services/messenger-event-processor.service';
+import { BotControlService } from './services/bot-control.service';
 
 @Module({
   providers: [
+    BotControlService,
     ConversationStore,
     StripePaymentStore,
     HandleIncomingMessageUseCase,
@@ -22,6 +24,7 @@ import { MessengerEventProcessorService } from './services/messenger-event-proce
     MessengerEventProcessorService,
   ],
   exports: [
+    BotControlService,
     ConversationStore,
     StripePaymentStore,
     HandleIncomingMessageUseCase,

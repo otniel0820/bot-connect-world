@@ -5,6 +5,7 @@ import { DemoRepositoryPort } from '../../domain/ports/demo-repository.port';
 // Mapeo de paquetes del panel por tipo
 export const PANEL_PACKAGES = {
   demo:         'Completo - Full Demo 1hr',
+  demo_3h:      'Completo - Full Demo 3hr',
   basic_1m:     '1 Conexion - Full 1 Months [Credit: 1]',
   basic_3m:     '1 Conexion - Full 3 Months [Credit: 3]',
   basic_6m:     '1 Conexion - Full 6 Months [Credit: 6]',
@@ -47,8 +48,9 @@ export class ActivateAccountUseCase {
       account = await this.panelPort.createUser(fullname, packageName);
     }
 
-    if (facebookUserId && packageKey === 'demo') {
+    if (facebookUserId && (packageKey === 'demo' || packageKey === 'demo_3h')) {
       const now = new Date();
+      const durationMs = packageKey === 'demo_3h' ? 3 * 60 * 60 * 1000 : 60 * 60 * 1000;
       await this.demoRepo.save({
         facebookUserId,
         fullname,
@@ -56,9 +58,9 @@ export class ActivateAccountUseCase {
         panelPassword: account.password,
         packageName,
         activatedAt: now,
-        expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
+        expiresAt: new Date(now.getTime() + durationMs),
       });
-      this.logger.log(`Demo guardada en MongoDB para ${facebookUserId}`);
+      this.logger.log(`Demo guardada en MongoDB para ${facebookUserId} (${packageKey})`);
     }
 
     return account;

@@ -4,9 +4,13 @@ import { AiProviderPort } from '../../domain/ports/ai-provider.port';
 import { ConversationStore } from '../stores/conversation.store';
 import { OrderRepositoryPort } from '../../domain/ports/order-repository.port';
 import { CustomerRepositoryPort } from '../../domain/ports/customer-repository.port';
+import { DemoRepositoryPort } from '../../domain/ports/demo-repository.port';
+import { PanelUsernameRepositoryPort } from '../../domain/ports/panel-username-repository.port';
+import { EmailPort } from '../../domain/ports/email.port';
 import { ActivateAccountUseCase, PackageKey } from './activate-account.use-case';
 import { PaymentLookupService } from '../services/payment-lookup.service';
 import { DemoFlowService } from '../services/demo-flow.service';
+import { BotControlService } from '../services/bot-control.service';
 import { StripePayment } from '../../domain/entities/stripe-payment.entity';
 import { SERVICE_INFO } from '../../infrastructure/config/service-info';
 
@@ -33,9 +37,13 @@ export class HandleIncomingMessageUseCase {
     private readonly conversationStore: ConversationStore,
     private readonly orderRepo: OrderRepositoryPort,
     private readonly customerRepo: CustomerRepositoryPort,
+    private readonly demoRepo: DemoRepositoryPort,
+    private readonly panelUsernameRepo: PanelUsernameRepositoryPort,
+    private readonly emailPort: EmailPort,
     private readonly activateAccountUseCase: ActivateAccountUseCase,
     private readonly paymentLookup: PaymentLookupService,
     private readonly demoFlow: DemoFlowService,
+    private readonly botControlService: BotControlService,
   ) {}
 
   async execute(
@@ -126,11 +134,66 @@ export class HandleIncomingMessageUseCase {
       return;
     }
 
-    this.conversationStore.addMessage(senderId, { role: 'user', content: messageText });
+    // Si hay imagen que no es comprobante, analizarla y añadirla al contexto
+    let imageContext = '';
+    if (imageUrl) {
+      try {
+        const description = await this.aiProviderPort.describeImage(imageUrl);
+        this.logger.log(`Imagen analizada de ${senderId}: ${description.substring(0, 100)}`);
+        imageContext = `[El cliente envió una imagen. Contenido: ${description}]`;
+      } catch {
+        this.logger.warn(`No se pudo analizar imagen de ${senderId}`);
+      }
+    }
+
+    const userContent = imageContext
+      ? `${messageText ? messageText + '\n' : ''}${imageContext}`.trim()
+      : messageText;
+
+    this.conversationStore.addMessage(senderId, { role: 'user', content: userContent });
+
+    // Buscar perfil del cliente para personalizar respuestas
+    const customer = await this.customerRepo.findByFacebookId(senderId).catch(() => null);
+    const isActiveCustomer = customer
+      ? await this.panelUsernameRepo.hasAny(customer.id).catch(() => false)
+      : false;
+
     let paymentContext = '';
 
     if (DEMO_REGEX.test(messageText)) {
       this.logger.log(`Solicitud de demo de ${senderId}`);
+
+      if (!this.botControlService.getSettings().demos_enabled) {
+        this.logger.log(`Demos desactivadas — rechazando solicitud de ${senderId}`);
+        await this.messengerPort.sendTypingOff(senderId);
+        await this.messengerPort.sendMessage(
+          senderId,
+          'En este momento las demos están temporalmente desactivadas. Si deseas acceder al servicio, puedes adquirir uno de nuestros planes directamente. ¡Con gusto te ayudamos!',
+        );
+        return;
+      }
+
+      // Verificar si el usuario ya tuvo una demo anterior
+      const existingDemo = await this.demoRepo.findByFacebookUserId(senderId);
+      if (existingDemo) {
+        this.logger.log(`Usuario ${senderId} ya tiene demo (${existingDemo.packageName}) — rechazando nueva solicitud`);
+        await this.messengerPort.sendTypingOff(senderId);
+        const history = this.conversationStore.getHistory(senderId);
+        const rejectionResponse = await this.aiProviderPort.generateResponse(history, this.buildSystemPrompt(`
+[INSTRUCCIÓN INTERNA - DEMO YA UTILIZADA]
+Este cliente ya utilizó su demo gratuita anteriormente (usuario: ${existingDemo.panelUsername}).
+ACCIÓN REQUERIDA: Informa amablemente que la demo es de un solo uso por persona. Destaca los beneficios del servicio completo, menciona los planes disponibles y anímalo a adquirir una suscripción. Sé cálido y enfocado en convencerlo, no en rechazarlo. No menciones precios exactos, dirígelo a: https://connect-world.it.com/
+[FIN INSTRUCCIÓN]`));
+        await this.messengerPort.sendMessage(senderId, rejectionResponse);
+        return;
+      }
+
+      // Analizar sentimiento para determinar duración de la demo
+      const history = this.conversationStore.getHistory(senderId);
+      const duration = await this.aiProviderPort.analyzeSentiment(history);
+      this.conversationStore.setDemoDuration(senderId, duration);
+      this.logger.log(`Duración de demo asignada para ${senderId}: ${duration}`);
+
       this.conversationStore.setPaymentState(senderId, 'awaiting_device_demo');
 
       // Si ya viene el dispositivo en el mismo mensaje, procesarlo directo
@@ -140,10 +203,11 @@ export class HandleIncomingMessageUseCase {
         return;
       }
 
+      const demoLabel = duration === '3h' ? '3 horas' : '1 hora';
       paymentContext = `
 [INSTRUCCIÓN INTERNA - DEMO SOLICITADA]
-El cliente quiere probar el servicio con la demo gratuita de 1 hora.
-ACCIÓN REQUERIDA: Explica brevemente la demo (1 hora gratis, acceso completo, sin datos de pago) y pregúntale en qué dispositivo le gustaría probarla.
+El cliente calificó para una demo gratuita de ${demoLabel}.
+ACCIÓN REQUERIDA: Explica brevemente la demo (${demoLabel} gratis, acceso completo, sin datos de pago) y pregúntale en qué dispositivo le gustaría probarla.
 Menciona las opciones: Android, iPhone/iPad, Fire TV Stick, Smart TV, TV Box o Computadora.
 [FIN INSTRUCCIÓN]`;
     } else if (GENERIC_PAYMENT_REGEX.test(messageText)) {
@@ -158,7 +222,30 @@ NO confirmes ni deniegues el pago aún.
     }
 
     const history = this.conversationStore.getHistory(senderId);
-    const response = await this.aiProviderPort.generateResponse(history, this.buildSystemPrompt(paymentContext));
+    const response = await this.aiProviderPort.generateResponse(history, this.buildSystemPrompt(paymentContext, isActiveCustomer, customer?.name));
+
+    // Detectar marcador de escalación
+    const escalateMatch = response.match(/^\[ESCALAR:\s*(.+?)\]/i);
+    if (escalateMatch) {
+      const reason = escalateMatch[1].trim();
+      this.logger.log(`Escalación detectada para ${senderId}: ${reason}`);
+
+      // Enviar email al admin con el contexto completo
+      await this.emailPort.sendEscalation({
+        facebookUserId: senderId,
+        customerName: customer?.name,
+        reason,
+        conversationHistory: history,
+      });
+
+      // Responder al cliente de forma humana sin revelar que es un bot
+      const escalationMsg = 'Entiendo, déjame comunicarte con el agente de soporte encargado de esta área. Él te contactará en breve, puede tomar unos minutos. Queda en buenas manos!';
+      this.conversationStore.addMessage(senderId, { role: 'assistant', content: escalationMsg });
+      await this.messengerPort.sendTypingOff(senderId);
+      await this.messengerPort.sendMessage(senderId, escalationMsg);
+      return;
+    }
+
     this.conversationStore.addMessage(senderId, { role: 'assistant', content: response });
     await this.messengerPort.sendTypingOff(senderId);
     await this.messengerPort.sendMessage(senderId, response);
@@ -229,21 +316,63 @@ INSTRUCCIÓN: No se encontró el pago. Pide al cliente que verifique su comproba
         return false;
       }
 
-      const isRenewal = !!customer.panelUsername;
-      this.logger.log(`${isRenewal ? 'Renovación' : 'Nueva suscripción'} para ${customer.name} | ${packageKey}`);
+      const isRenewal = order.isRenewal;
+
+      // Para renovaciones: buscar el username exacto desde la orden (seleccionado por el usuario en la landing)
+      let usernameToRenew: string | undefined;
+      if (isRenewal && order.panelUsernameId) {
+        const panelUsernameDoc = await this.panelUsernameRepo.findById(order.panelUsernameId);
+        usernameToRenew = panelUsernameDoc?.username;
+        this.logger.log(`Renovación para ${customer.name} | username: ${usernameToRenew ?? 'no encontrado'}`);
+      } else if (isRenewal && !order.panelUsernameId) {
+        // Renovación sin username seleccionado: buscar el único username activo del customer
+        const existingUsernames = await this.panelUsernameRepo.findByCustomerId(order.customerId);
+        usernameToRenew = existingUsernames[existingUsernames.length - 1]?.username;
+        this.logger.log(`Renovación sin panel_username_id para ${customer.name} | fallback username: ${usernameToRenew ?? 'ninguno'}`);
+      }
+
+      this.logger.log(`${isRenewal ? 'Renovación' : 'Nueva suscripción'} para ${customer.name} | ${packageKey}${usernameToRenew ? ` | username: ${usernameToRenew}` : ''}`);
+
+      const { renewals_enabled, new_activations_enabled } = this.botControlService.getSettings();
+
+      if (isRenewal && !renewals_enabled) {
+        this.logger.log(`Renovaciones desactivadas — no se procesará renovación para ${senderId}`);
+        await this.messengerPort.sendMessage(
+          senderId,
+          'Tu pago fue recibido. En este momento las renovaciones automáticas están temporalmente desactivadas. Un agente procesará tu renovación manualmente en breve. Disculpa el inconveniente.',
+        );
+        return false;
+      }
+
+      if (!isRenewal && !new_activations_enabled) {
+        this.logger.log(`Nuevas activaciones desactivadas — no se procesará activación para ${senderId}`);
+        await this.messengerPort.sendMessage(
+          senderId,
+          'Tu pago fue recibido. En este momento las activaciones automáticas de nuevas cuentas están temporalmente desactivadas. Un agente activará tu cuenta manualmente en breve. Disculpa el inconveniente.',
+        );
+        return false;
+      }
 
       const account = await this.activateAccountUseCase.execute(
         customer.name,
         packageKey,
         undefined,
-        customer.panelUsername,
+        usernameToRenew,
       );
 
-      await this.customerRepo.updatePanelCredentials(order.customerId, account.username, senderId);
+      // Actualizar facebook_id del customer
+      await this.customerRepo.updateFacebookId(order.customerId, senderId);
 
+      // Para nuevas activaciones: crear PanelUsername doc y enlazarlo a la orden
+      if (!isRenewal) {
+        const panelUsernameDoc = await this.panelUsernameRepo.create(order.customerId, account.username);
+        await this.orderRepo.setPanelUsernameId(order.id, panelUsernameDoc.id);
+      }
+
+      const credentialsNote = `\n\nImportante: escribe el usuario y la contraseña exactamente como aparecen aquí, respetando mayúsculas, minúsculas y cualquier número o símbolo. Un error de tipeo es la causa más común de que no entre. Si tienes algún problema para ingresar, cuéntame qué te aparece en pantalla y con gusto te ayudo.`;
       const msg = isRenewal
-        ? `Tu suscripción ha sido renovada!\n\nUsuario: ${account.username}\nContraseña: ${account.password}\n\nYa tienes acceso activo nuevamente. Si tienes alguna duda, con gusto te ayudamos.`
-        : `Tu suscripción ha sido activada!\n\nUsuario: ${account.username}\nContraseña: ${account.password}\n\nYa puedes acceder al servicio. Si tienes alguna duda, con gusto te ayudamos.`;
+        ? `Tu suscripción ha sido renovada!\n\nUsuario: ${account.username}\nContraseña: ${account.password}${credentialsNote}`
+        : `Tu suscripción ha sido activada!\n\nUsuario: ${account.username}\nContraseña: ${account.password}${credentialsNote}`;
 
       await this.messengerPort.sendMessage(senderId, msg);
       return true;
@@ -260,13 +389,17 @@ INSTRUCCIÓN: No se encontró el pago. Pide al cliente que verifique su comproba
     return this.aiProviderPort.generateResponse(history, this.buildSystemPrompt(context));
   }
 
-  private buildSystemPrompt(paymentContext: string): string {
+  private buildSystemPrompt(paymentContext: string, isActiveCustomer = false, customerName?: string): string {
+    const customerContext = isActiveCustomer
+      ? `\n=== PERFIL DEL USUARIO ===\nEs un cliente activo con suscripción vigente${customerName ? ` (nombre: ${customerName})` : ''}. Trátalo con familiaridad y prioridad. Si reporta un problema técnico, atiéndelo como cliente. Si pide contenido que no encuentra, trátalo como solicitud de un suscriptor activo.\n`
+      : `\n=== PERFIL DEL USUARIO ===\nNo es cliente activo todavía${customerName ? ` (nombre registrado: ${customerName})` : ''}. Puede ser un prospecto o alguien evaluando el servicio. Si pide contenido que no encuentra, atiéndelo igual de bien pero aprovecha para mencionar que con una suscripción tendrá acceso a todo el catálogo.\n`;
+
     return `Eres un asistente de atención al cliente para ${SERVICE_INFO.businessName}.
 Actúa de manera natural, amigable y profesional, como si fueras un empleado real.
 Responde SIEMPRE en el mismo idioma que usa el cliente.
 Sé conciso pero completo. No uses lenguaje robótico.
 FORMATO: Estás en Facebook Messenger. NUNCA uses Markdown. No uses **negritas**, no uses [texto](url), no uses # títulos. Para links escribe la URL directa: https://ejemplo.com
-
+${customerContext}
 === INFORMACIÓN DEL NEGOCIO ===
 ${SERVICE_INFO.description}
 
@@ -291,8 +424,11 @@ ${SERVICE_INFO.referralProgram}
 === DEMO GRATUITA ===
 ${SERVICE_INFO.demo}
 
+=== SOPORTE TÉCNICO ===
+${SERVICE_INFO.technicalSupport}
+
 === LÍMITE DE CONOCIMIENTO ===
-SOLO puedes responder sobre: planes y precios, dispositivos compatibles, métodos de pago, programa de referidos, demo gratuita, horarios, contacto y soporte técnico básico.
+SOLO puedes responder sobre: planes y precios, dispositivos compatibles, métodos de pago, programa de referidos, demo gratuita, horarios, contacto y soporte técnico.
 Si el cliente pregunta algo no relacionado con el servicio, responde amablemente que solo puedes ayudar con temas de Connect World.
 
 === INSTRUCCIONES ESPECIALES ===
@@ -300,9 +436,11 @@ Si el cliente pregunta algo no relacionado con el servicio, responde amablemente
 - Dispositivos: menciona opciones disponibles y ofrece ayuda con instalación.
 - Demo: el sistema guiará al cliente — no prometas activarla tú mismo.
 - Referidos: explica recompensas y que el código es su nombre de usuario.
-- Problemas técnicos: pide el dispositivo y da pasos básicos. Si persiste: connectworld2008@gmail.com
+- Soporte técnico: sigue la guía de diagnóstico por pasos. Haz las preguntas de una en una, nunca como lista. Sé empático.
 - NUNCA inventes información que no esté en este prompt.
 - NUNCA confirmes un pago sin el resultado VERIFICADO en el contexto.
+- NUNCA le digas al cliente que envíe un correo ni que contacte soporte por email. NUNCA menciones ninguna dirección de email al cliente.
+- Cuando no puedas resolver algo o esté fuera de tu conocimiento: responde ÚNICAMENTE con [ESCALAR: descripción breve del problema], sin ningún otro texto. El sistema conectará al cliente con un agente humano automáticamente.
 - Mantén un tono cálido, humano y conciso.
 ${paymentContext}`;
   }

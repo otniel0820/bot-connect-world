@@ -1,7 +1,7 @@
 {
   "name": "bot-panel",
   "version": "1.0.0",
-  "description": "Facebook Messenger Bot - Cinema Service",
+  "description": "Facebook Messenger Bot - Connect World",
   "author": "",
   "private": true,
   "license": "UNLICENSED",
@@ -38,6 +38,7 @@
     "openai": "^4.77.0",
     "puppeteer": "^24.39.0",
     "reflect-metadata": "^0.2.0",
+    "resend": "^6.9.4",
     "rxjs": "^7.8.1",
     "stripe": "^20.4.1"
   },
