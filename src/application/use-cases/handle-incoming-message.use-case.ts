@@ -176,15 +176,13 @@ export class HandleIncomingMessageUseCase {
       // Verificar si el usuario ya tuvo una demo anterior
       const existingDemo = await this.demoRepo.findByFacebookUserId(senderId);
       if (existingDemo) {
-        this.logger.log(`Usuario ${senderId} ya tiene demo (${existingDemo.packageName}) — rechazando nueva solicitud`);
+        this.logger.log(`Usuario ${senderId} ya tiene demo (${existingDemo.packageName}) — enviando mensaje de planes`);
         await this.messengerPort.sendTypingOff(senderId);
-        const history = this.conversationStore.getHistory(senderId);
-        const rejectionResponse = await this.aiProviderPort.generateResponse(history, this.buildSystemPrompt(`
-[INSTRUCCIÓN INTERNA - DEMO YA UTILIZADA]
-Este cliente ya utilizó su demo gratuita anteriormente (usuario: ${existingDemo.panelUsername}).
-ACCIÓN REQUERIDA: Informa amablemente que la demo es de un solo uso por persona. Destaca los beneficios del servicio completo, menciona los planes disponibles y anímalo a adquirir una suscripción. Sé cálido y enfocado en convencerlo, no en rechazarlo. No menciones precios exactos, dirígelo a: https://connect-world.it.com/
-[FIN INSTRUCCIÓN]`));
-        await this.messengerPort.sendMessage(senderId, rejectionResponse);
+        await this.messengerPort.sendMessage(
+          senderId,
+          `Hola! Ya tuviste la oportunidad de probar nuestra demo gratuita anteriormente, esperamos que hayas disfrutado la experiencia y visto todo lo que Connect World tiene para ofrecer!\n\nLa demo es de uso unico por persona, pero la buena noticia es que ahora puedes contratar un plan y disfrutar del servicio completo sin limite de tiempo. Te comparto nuestros precios:\n\nPlan Basico - 1 dispositivo\n1 mes: $10 | 3 meses: $30 | 6 meses: $60 | 12 meses: $120\n\nPlan Estandar - 2 dispositivos\n1 mes: $15 | 3 meses: $35 | 6 meses: $70 | 12 meses: $140\n\nPlan Premium - 3 dispositivos\n1 mes: $15 | 3 meses: $45 | 6 meses: $90 | 12 meses: $149\n\nPuedes contratar tu plan directamente en: https://connect-world.it.com/\n\nCualquier pregunta con gusto te ayudo!`,
+        );
+        this.logger.log(`Mensaje de planes enviado a ${senderId}`);
         return;
       }
 

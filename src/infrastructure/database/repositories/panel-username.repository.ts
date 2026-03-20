@@ -10,7 +10,7 @@ export class PanelUsernameMongoRepository implements PanelUsernameRepositoryPort
 
   private toInfo(doc: PanelUsernameDocument): PanelUsernameInfo {
     return {
-      id:         doc.id,
+      id:         doc._id.toString(),
       customerId: doc.customer_id.toString(),
       username:   doc.username,
     };

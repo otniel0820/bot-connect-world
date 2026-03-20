@@ -34,14 +34,14 @@ export class FacebookMessengerAdapter implements MessengerPort {
     await this.callSendApi({
       recipient: { id: recipientId },
       sender_action: 'typing_on',
-    });
+    }).catch((err) => this.logger.warn(`sendTypingOn fallido para ${recipientId}: ${err?.message}`));
   }
 
   async sendTypingOff(recipientId: string): Promise<void> {
     await this.callSendApi({
       recipient: { id: recipientId },
       sender_action: 'typing_off',
-    });
+    }).catch((err) => this.logger.warn(`sendTypingOff fallido para ${recipientId}: ${err?.message}`));
   }
 
   private async callSendApi(body: object): Promise<void> {
